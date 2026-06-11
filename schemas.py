@@ -1,0 +1,153 @@
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from datetime import date
+from models import DegradationType, DegradationLevel, ProjectStatus, AcceptanceResult
+
+
+class ImplementationRecordBase(BaseModel):
+    record_year: int
+    record_month: int
+    planted_area: float
+    survival_count: int
+    total_planted_count: int
+    survival_rate: float
+    notes: Optional[str] = None
+
+
+class ImplementationRecordCreate(ImplementationRecordBase):
+    plot_id: int
+
+
+class ImplementationRecord(ImplementationRecordBase):
+    id: int
+    plot_id: int
+
+    class Config:
+        from_attributes = True
+
+
+class MonitoringRecordBase(BaseModel):
+    record_date: date
+    vegetation_coverage: float
+    carbon_sequestration: float
+    water_conservation: float
+    notes: Optional[str] = None
+
+
+class MonitoringRecordCreate(MonitoringRecordBase):
+    plot_id: int
+
+
+class MonitoringRecord(MonitoringRecordBase):
+    id: int
+    plot_id: int
+
+    class Config:
+        from_attributes = True
+
+
+class PlotBase(BaseModel):
+    plot_code: str
+    location: str
+    area: float
+    degradation_type: DegradationType
+    degradation_level: DegradationLevel
+
+
+class PlotCreate(PlotBase):
+    project_id: int
+
+
+class Plot(PlotBase):
+    id: int
+    project_id: int
+    implementation_records: List[ImplementationRecord] = []
+    monitoring_records: List[MonitoringRecord] = []
+
+    class Config:
+        from_attributes = True
+
+
+class AcceptanceBase(BaseModel):
+    acceptance_date: date
+    result: AcceptanceResult
+    final_vegetation_coverage: float
+    final_carbon_sequestration: float
+    final_water_conservation: float
+    extension_days: Optional[int] = None
+    remarks: Optional[str] = None
+
+
+class AcceptanceCreate(AcceptanceBase):
+    project_id: int
+
+
+class Acceptance(AcceptanceBase):
+    id: int
+    project_id: int
+
+    class Config:
+        from_attributes = True
+
+
+class ProjectBase(BaseModel):
+    name: str
+    region: str
+    degradation_type: DegradationType
+    degradation_level: DegradationLevel
+    total_restoration_area: float
+    restoration_measures: str
+    establishment_date: date
+    target_vegetation_coverage: float
+    target_carbon_sequestration: float
+    target_water_conservation: float
+    description: Optional[str] = None
+
+
+class ProjectCreate(ProjectBase):
+    pass
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    region: Optional[str] = None
+    degradation_type: Optional[DegradationType] = None
+    degradation_level: Optional[DegradationLevel] = None
+    total_restoration_area: Optional[float] = None
+    restoration_measures: Optional[str] = None
+    status: Optional[ProjectStatus] = None
+    establishment_date: Optional[date] = None
+    target_vegetation_coverage: Optional[float] = None
+    target_carbon_sequestration: Optional[float] = None
+    target_water_conservation: Optional[float] = None
+    description: Optional[str] = None
+
+
+class Project(ProjectBase):
+    id: int
+    status: ProjectStatus
+    plots: List[Plot] = []
+    acceptance: Optional[Acceptance] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ProjectStatusUpdate(BaseModel):
+    status: ProjectStatus
+
+
+class StatisticsByRegion(BaseModel):
+    region: str
+    total_projects: int
+    total_restoration_area: float
+    total_carbon_sequestration: float
+    passed_projects: int
+
+
+class StatisticsByDegradationType(BaseModel):
+    degradation_type: str
+    total_projects: int
+    total_restoration_area: float
+    total_carbon_sequestration: float
+    passed_projects: int
