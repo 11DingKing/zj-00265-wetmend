@@ -52,6 +52,22 @@ class Project(Base):
 
     plots = relationship("Plot", back_populates="project", cascade="all, delete-orphan")
     acceptance = relationship("Acceptance", back_populates="project", uselist=False)
+    measure_records = relationship("RestorationMeasureRecord", back_populates="project", cascade="all, delete-orphan")
+
+
+class RestorationMeasureRecord(Base):
+    __tablename__ = "restoration_measure_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"))
+    measure_type = Column(Enum(RestorationMeasure), index=True)
+    implementation_area = Column(Float)
+    implementation_date = Column(Date)
+    cost = Column(Float, nullable=True)
+    contractor = Column(String(200), nullable=True)
+    notes = Column(Text, nullable=True)
+
+    project = relationship("Project", back_populates="measure_records")
 
 
 class Plot(Base):

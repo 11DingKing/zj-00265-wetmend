@@ -432,11 +432,230 @@ def get_statistics_by_degradation_type(db: Session = Depends(get_db)):
     return [schemas.StatisticsByDegradationType(**stats) for stats in type_stats.values()]
 
 
+def _get_project_actual_indicators(db_project: models.Project) -> Optional[Tuple[float, float, float, float]]:
+    indicators = _calculate_project_final_indicators(db_project)
+    if indicators is None:
+        if db_project.acceptance:
+            actual_veg = db_project.acceptance.final_vegetation_coverage
+            actual_carbon = db_project.acceptance.final_carbon_sequestration
+            actual_water = db_project.acceptance.final_water_conservation
+        else:
+            return None
+    else:
+        actual_veg, actual_carbon, actual_water = indicators
+    target_veg = db_project.target_vegetation_coverage
+    target_carbon = db_project.target_carbon_sequestration
+    target_water = db_project.target_water_conservation
+    reach_count = 0
+    reach_total = 0
+    if target_veg and target_veg > 0:
+        reach_count += 1 if actual_veg >= target_veg else 0
+        reach_total += 1
+    if target_carbon and target_carbon > 0:
+        reach_count += 1 if actual_carbon >= target_carbon else 0
+        reach_total += 1
+    if target_water and target_water > 0:
+        reach_count += 1 if actual_water >= target_water else 0
+        reach_total += 1
+    target_reach_rate = (reach_count / reach_total * 100) if reach_total > 0 else 0.0
+    return actual_veg, actual_carbon, actual_water, target_reach_rate
+
+
+@app.post("/measure-records/", response_model=schemas.RestorationMeasureRecord, tags=["措施管理"])
+def create_measure_record(record: schemas.RestorationMeasureRecordCreate, db: Session = Depends(get_db)):
+    db_project = db.query(models.Project).filter(models.Project.id == record.project_id).first()
+    if db_project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if db_project.status not in [ProjectStatus.ESTABLISHED, ProjectStatus.IMPLEMENTING]:
+        raise HTTPException(status_code=400, detail="项目状态不在立项或实施期，无法登记措施")
+    db_record = models.RestorationMeasureRecord(**record.model_dump())
+    db.add(db_record)
+    db.commit()
+    db.refresh(db_record)
+    return db_record
+
+
+@app.get("/measure-records/", response_model=List[schemas.RestorationMeasureRecord], tags=["措施管理"])
+def get_measure_records(
+    project_id: Optional[int] = None,
+    measure_type: Optional[models.RestorationMeasure] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.RestorationMeasureRecord)
+    if project_id:
+        query = query.filter(models.RestorationMeasureRecord.project_id == project_id)
+    if measure_type:
+        query = query.filter(models.RestorationMeasureRecord.measure_type == measure_type)
+    return query.offset(skip).limit(limit).all()
+
+
+@app.get("/measure-records/{record_id}", response_model=schemas.RestorationMeasureRecord, tags=["措施管理"])
+def get_measure_record(record_id: int, db: Session = Depends(get_db)):
+    db_record = db.query(models.RestorationMeasureRecord).filter(models.RestorationMeasureRecord.id == record_id).first()
+    if db_record is None:
+        raise HTTPException(status_code=404, detail="措施记录不存在")
+    return db_record
+
+
+@app.put("/measure-records/{record_id}", response_model=schemas.RestorationMeasureRecord, tags=["措施管理"])
+def update_measure_record(record_id: int, record_update: schemas.RestorationMeasureRecordUpdate, db: Session = Depends(get_db)):
+    db_record = db.query(models.RestorationMeasureRecord).filter(models.RestorationMeasureRecord.id == record_id).first()
+    if db_record is None:
+        raise HTTPException(status_code=404, detail="措施记录不存在")
+    update_data = record_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_record, key, value)
+    db.commit()
+    db.refresh(db_record)
+    return db_record
+
+
+@app.delete("/measure-records/{record_id}", tags=["措施管理"])
+def delete_measure_record(record_id: int, db: Session = Depends(get_db)):
+    db_record = db.query(models.RestorationMeasureRecord).filter(models.RestorationMeasureRecord.id == record_id).first()
+    if db_record is None:
+        raise HTTPException(status_code=404, detail="措施记录不存在")
+    db.delete(db_record)
+    db.commit()
+    return {"message": "措施记录已删除"}
+
+
+@app.get("/statistics/by-measure-effectiveness", response_model=schemas.MeasureEffectivenessComparison, tags=["统计汇总"])
+def get_statistics_by_measure_effectiveness(db: Session = Depends(get_db)):
+    projects = db.query(models.Project).all()
+
+    measure_stats = {}
+    for project in projects:
+        indicators = _get_project_actual_indicators(project)
+        if indicators is None:
+            actual_veg, actual_carbon, actual_water, reach_rate = 0.0, 0.0, 0.0, 0.0
+            has_data = False
+        else:
+            actual_veg, actual_carbon, actual_water, reach_rate = indicators
+            has_data = True
+
+        passed = False
+        if project.acceptance and project.acceptance.result == AcceptanceResult.PASSED:
+            passed = True
+
+        used_measure_types = set()
+        if project.measure_records:
+            for mr in project.measure_records:
+                mt = mr.measure_type.value
+                used_measure_types.add(mt)
+                if mt not in measure_stats:
+                    measure_stats[mt] = {
+                        "measure_type": mt,
+                        "project_ids": set(),
+                        "total_implementation_area": 0.0,
+                        "vegetation_coverage_values": [],
+                        "carbon_sequestration_values": [],
+                        "carbon_per_unit_area_values": [],
+                        "water_conservation_values": [],
+                        "target_reach_rates": [],
+                        "passed_count": 0,
+                        "has_data_count": 0,
+                    }
+                measure_stats[mt]["total_implementation_area"] += mr.implementation_area
+                measure_stats[mt]["project_ids"].add(project.id)
+                if has_data:
+                    measure_stats[mt]["has_data_count"] += 1
+                    measure_stats[mt]["vegetation_coverage_values"].append(actual_veg)
+                    measure_stats[mt]["carbon_sequestration_values"].append(actual_carbon)
+                    if project.total_restoration_area > 0:
+                        measure_stats[mt]["carbon_per_unit_area_values"].append(actual_carbon / project.total_restoration_area)
+                    measure_stats[mt]["water_conservation_values"].append(actual_water)
+                    measure_stats[mt]["target_reach_rates"].append(reach_rate)
+                if passed:
+                    measure_stats[mt]["passed_count"] += 1
+        else:
+            continue
+
+    result_data = []
+    for mt, stats in measure_stats.items():
+        total_projects = len(stats["project_ids"])
+        has_data_count = stats["has_data_count"]
+        avg_veg = round(sum(stats["vegetation_coverage_values"]) / has_data_count, 2) if has_data_count > 0 else 0.0
+        avg_carbon = round(sum(stats["carbon_sequestration_values"]) / has_data_count, 2) if has_data_count > 0 else 0.0
+        avg_carbon_per_area = round(sum(stats["carbon_per_unit_area_values"]) / has_data_count, 4) if has_data_count > 0 else 0.0
+        avg_water = round(sum(stats["water_conservation_values"]) / has_data_count, 2) if has_data_count > 0 else 0.0
+        avg_reach = round(sum(stats["target_reach_rates"]) / has_data_count, 2) if has_data_count > 0 else 0.0
+        pass_rate = round(stats["passed_count"] / total_projects * 100, 2) if total_projects > 0 else 0.0
+
+        result_data.append(schemas.MeasureEffectivenessItem(
+            measure_type=mt,
+            total_projects=total_projects,
+            total_implementation_area=round(stats["total_implementation_area"], 2),
+            avg_vegetation_coverage=avg_veg,
+            avg_carbon_sequestration=avg_carbon,
+            avg_carbon_per_unit_area=avg_carbon_per_area,
+            avg_water_conservation=avg_water,
+            avg_target_reach_rate=avg_reach,
+            total_passed_projects=stats["passed_count"],
+            pass_rate=pass_rate,
+        ))
+
+    result_data.sort(key=lambda x: x.avg_carbon_sequestration, reverse=True)
+
+    if result_data:
+        top = result_data[0]
+        summary = f"共统计 {len(result_data)} 类修复措施，{top.measure_type} 的平均固碳量最高（{top.avg_carbon_sequestration}吨/项目），达标通过率 {top.pass_rate}%。"
+    else:
+        summary = "暂无足够的措施-监测数据用于成效对比。"
+
+    return schemas.MeasureEffectivenessComparison(summary=summary, data=result_data)
+
+
+@app.get("/projects/{project_id}/measures-with-effect", tags=["措施管理"])
+def get_project_measures_with_effect(project_id: int, db: Session = Depends(get_db)):
+    db_project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if db_project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    indicators = _get_project_actual_indicators(db_project)
+    if indicators:
+        actual_veg, actual_carbon, actual_water, reach_rate = indicators
+    else:
+        actual_veg, actual_carbon, actual_water, reach_rate = None, None, None, None
+
+    measure_list = []
+    for mr in db_project.measure_records:
+        measure_list.append({
+            "id": mr.id,
+            "measure_type": mr.measure_type.value,
+            "implementation_area": mr.implementation_area,
+            "implementation_date": str(mr.implementation_date),
+            "cost": mr.cost,
+            "contractor": mr.contractor,
+            "notes": mr.notes,
+        })
+
+    passed = None
+    if db_project.acceptance:
+        passed = db_project.acceptance.result.value
+
+    return {
+        "project_id": db_project.id,
+        "project_name": db_project.name,
+        "status": db_project.status.value,
+        "measures": measure_list,
+        "effect": {
+            "actual_vegetation_coverage": actual_veg,
+            "actual_carbon_sequestration": actual_carbon,
+            "actual_water_conservation": actual_water,
+            "target_reach_rate": reach_rate,
+            "acceptance_result": passed,
+        }
+    }
+
+
 @app.get("/", tags=["系统"])
 def root():
     return {
         "name": "青藏高原湿地草地退化修复项目管理系统",
-        "version": "1.0.0",
-        "description": "管理青藏高原东北缘湿地草地退化修复项目，支持项目全生命周期管理",
+        "version": "1.1.0",
+        "description": "管理青藏高原东北缘湿地草地退化修复项目，支持项目全生命周期管理、措施登记与成效对比",
         "docs": "/docs"
     }

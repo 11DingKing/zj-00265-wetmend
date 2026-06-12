@@ -329,6 +329,109 @@ def init_sample_data():
         )
         db.add(acceptance)
 
+        measure_records = [
+            models.RestorationMeasureRecord(
+                project_id=project1.id,
+                measure_type=models.RestorationMeasure.NATIVE_PLANTING,
+                implementation_area=350.0,
+                implementation_date=date(2025, 4, 1),
+                cost=52.5,
+                contractor="青海高原生态修复有限公司",
+                notes="补植青海云杉、沙棘等乡土树种"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project1.id,
+                measure_type=models.RestorationMeasure.MICROBIAL_REGULATION,
+                implementation_area=500.0,
+                implementation_date=date(2025, 4, 15),
+                cost=18.0,
+                contractor="中科院西北研究院微生物实验室",
+                notes="施用固氮菌剂与菌根真菌复合制剂"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project1.id,
+                measure_type=models.RestorationMeasure.EXOGENOUS_ASSISTANCE,
+                implementation_area=200.0,
+                implementation_date=date(2025, 5, 1),
+                cost=30.0,
+                contractor="青海省水文水资源勘测局",
+                notes="生态补水 + 围栏封育防护"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project2.id,
+                measure_type=models.RestorationMeasure.NATIVE_PLANTING,
+                implementation_area=600.0,
+                implementation_date=date(2025, 2, 20),
+                cost=72.0,
+                contractor="甘肃祁连山生态建设工程公司",
+                notes="补植垂穗披碱草、老芒麦、早熟禾"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project2.id,
+                measure_type=models.RestorationMeasure.MICROBIAL_REGULATION,
+                implementation_area=800.0,
+                implementation_date=date(2025, 3, 10),
+                cost=24.0,
+                contractor="兰州大学生态学院",
+                notes="喷施光合菌群与根瘤菌剂"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project3.id,
+                measure_type=models.RestorationMeasure.NATIVE_PLANTING,
+                implementation_area=250.0,
+                implementation_date=date(2024, 7, 15),
+                cost=37.5,
+                contractor="甘南藏族自治州草原工作站",
+                notes="补植嵩草、苔草等湿地草本"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project3.id,
+                measure_type=models.RestorationMeasure.EXOGENOUS_ASSISTANCE,
+                implementation_area=300.0,
+                implementation_date=date(2024, 8, 1),
+                cost=45.0,
+                contractor="甘肃省水利厅牧区水利中心",
+                notes="引水沟渠修缮 + 季节性生态补水"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project4.id,
+                measure_type=models.RestorationMeasure.NATIVE_PLANTING,
+                implementation_area=900.0,
+                implementation_date=date(2024, 4, 1),
+                cost=108.0,
+                contractor="三江源生态保护建设集团",
+                notes="黑土滩混播补播：披碱草+中华羊茅+冷地早熟禾"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project4.id,
+                measure_type=models.RestorationMeasure.MICROBIAL_REGULATION,
+                implementation_area=1200.0,
+                implementation_date=date(2024, 4, 20),
+                cost=36.0,
+                contractor="青海大学农牧学院",
+                notes="解磷菌+丛枝菌根复合菌剂深施"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project4.id,
+                measure_type=models.RestorationMeasure.EXOGENOUS_ASSISTANCE,
+                implementation_area=1200.0,
+                implementation_date=date(2024, 5, 5),
+                cost=60.0,
+                contractor="玉树州草原监理站",
+                notes="禁牧围栏 + 鼠害防控 + 有机肥施用"
+            ),
+            models.RestorationMeasureRecord(
+                project_id=project5.id,
+                measure_type=models.RestorationMeasure.NATIVE_PLANTING,
+                implementation_area=450.0,
+                implementation_date=date(2024, 10, 1),
+                cost=54.0,
+                contractor="四川省若尔盖县林业和草原局",
+                notes="若尔盖湿地原生草本带土块移栽"
+            ),
+        ]
+        db.add_all(measure_records)
+
         db.commit()
         print("初始化数据完成！")
         print(f"创建了 {db.query(models.Project).count()} 个项目")
@@ -336,6 +439,7 @@ def init_sample_data():
         print(f"创建了 {db.query(models.ImplementationRecord).count()} 条实施记录")
         print(f"创建了 {db.query(models.MonitoringRecord).count()} 条监测记录")
         print(f"创建了 {db.query(models.Acceptance).count()} 条验收记录")
+        print(f"创建了 {db.query(models.RestorationMeasureRecord).count()} 条措施记录")
 
     except Exception as e:
         print(f"初始化数据失败: {e}")

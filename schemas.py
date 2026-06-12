@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import date
-from models import DegradationType, DegradationLevel, ProjectStatus, AcceptanceResult
+from models import DegradationType, DegradationLevel, ProjectStatus, AcceptanceResult, RestorationMeasure
 
 
 class ImplementationRecordBase(BaseModel):
@@ -113,6 +113,36 @@ class AcceptancePreview(BaseModel):
     reason: Optional[str] = None
 
 
+class RestorationMeasureRecordBase(BaseModel):
+    measure_type: RestorationMeasure
+    implementation_area: float
+    implementation_date: date
+    cost: Optional[float] = None
+    contractor: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RestorationMeasureRecordCreate(RestorationMeasureRecordBase):
+    project_id: int
+
+
+class RestorationMeasureRecordUpdate(BaseModel):
+    measure_type: Optional[RestorationMeasure] = None
+    implementation_area: Optional[float] = None
+    implementation_date: Optional[date] = None
+    cost: Optional[float] = None
+    contractor: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RestorationMeasureRecord(RestorationMeasureRecordBase):
+    id: int
+    project_id: int
+
+    class Config:
+        from_attributes = True
+
+
 class ProjectBase(BaseModel):
     name: str
     region: str
@@ -151,6 +181,7 @@ class Project(ProjectBase):
     status: ProjectStatus
     plots: List[Plot] = []
     acceptance: Optional[Acceptance] = None
+    measure_records: List[RestorationMeasureRecord] = []
 
     class Config:
         from_attributes = True
@@ -174,3 +205,32 @@ class StatisticsByDegradationType(BaseModel):
     total_restoration_area: float
     total_carbon_sequestration: float
     passed_projects: int
+
+
+class MeasureEffectivenessItem(BaseModel):
+    measure_type: str
+    total_projects: int
+    total_implementation_area: float
+    avg_vegetation_coverage: float
+    avg_carbon_sequestration: float
+    avg_carbon_per_unit_area: float
+    avg_water_conservation: float
+    avg_target_reach_rate: float
+    total_passed_projects: int
+    pass_rate: float
+
+
+class MeasureEffectivenessComparison(BaseModel):
+    summary: str
+    data: List[MeasureEffectivenessItem]
+
+
+class ProjectWithMeasures(ProjectBase):
+    id: int
+    status: ProjectStatus
+    plots: List[Plot] = []
+    acceptance: Optional[Acceptance] = None
+    measure_records: List[RestorationMeasureRecord] = []
+
+    class Config:
+        from_attributes = True
