@@ -68,12 +68,15 @@ class Plot(PlotBase):
         from_attributes = True
 
 
+class IndicatorComparison(BaseModel):
+    indicator_name: str
+    target_value: float
+    actual_value: float
+    reached: bool
+
+
 class AcceptanceBase(BaseModel):
     acceptance_date: date
-    result: AcceptanceResult
-    final_vegetation_coverage: float
-    final_carbon_sequestration: float
-    final_water_conservation: float
     extension_days: Optional[int] = None
     remarks: Optional[str] = None
 
@@ -85,9 +88,29 @@ class AcceptanceCreate(AcceptanceBase):
 class Acceptance(AcceptanceBase):
     id: int
     project_id: int
+    result: AcceptanceResult
+    final_vegetation_coverage: float
+    final_carbon_sequestration: float
+    final_water_conservation: float
+    comparisons: List[IndicatorComparison] = []
 
     class Config:
         from_attributes = True
+
+
+class AcceptancePreview(BaseModel):
+    project_id: int
+    project_name: str
+    target_vegetation_coverage: float
+    target_carbon_sequestration: float
+    target_water_conservation: float
+    final_vegetation_coverage: float
+    final_carbon_sequestration: float
+    final_water_conservation: float
+    comparisons: List[IndicatorComparison]
+    overall_reached: bool
+    can_accept: bool
+    reason: Optional[str] = None
 
 
 class ProjectBase(BaseModel):

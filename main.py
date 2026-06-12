@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import date
 
 from database import engine, get_db, Base
@@ -11,6 +11,60 @@ from models import ProjectStatus, DegradationType, AcceptanceResult
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="青藏高原湿地草地退化修复项目管理系统", description="管理青藏高原东北缘湿地草地退化修复项目")
+
+
+def _calculate_project_final_indicators(db_project: models.Project) -> Optional[Tuple[float, float, float]]:
+    total_area = 0.0
+    weighted_vegetation = 0.0
+    total_carbon = 0.0
+    total_water = 0.0
+    has_any_data = False
+
+    for plot in db_project.plots:
+        if not plot.monitoring_records:
+            continue
+        latest = max(plot.monitoring_records, key=lambda r: r.record_date)
+        has_any_data = True
+        total_area += plot.area
+        weighted_vegetation += latest.vegetation_coverage * plot.area
+        total_carbon += latest.carbon_sequestration
+        total_water += latest.water_conservation
+
+    if not has_any_data:
+        return None
+
+    final_vegetation = weighted_vegetation / total_area if total_area > 0 else 0.0
+    return round(final_vegetation, 2), round(total_carbon, 2), round(total_water, 2)
+
+
+def _build_comparisons(
+    target_veg: float,
+    target_carbon: float,
+    target_water: float,
+    actual_veg: float,
+    actual_carbon: float,
+    actual_water: float,
+) -> List[schemas.IndicatorComparison]:
+    return [
+        schemas.IndicatorComparison(
+            indicator_name="植被覆盖度(%)",
+            target_value=target_veg,
+            actual_value=actual_veg,
+            reached=actual_veg >= target_veg,
+        ),
+        schemas.IndicatorComparison(
+            indicator_name="固碳量(吨)",
+            target_value=target_carbon,
+            actual_value=actual_carbon,
+            reached=actual_carbon >= target_carbon,
+        ),
+        schemas.IndicatorComparison(
+            indicator_name="水源涵养量(万立方米)",
+            target_value=target_water,
+            actual_value=actual_water,
+            reached=actual_water >= target_water,
+        ),
+    ]
 
 
 @app.post("/projects/", response_model=schemas.Project, tags=["项目管理"])
@@ -185,6 +239,58 @@ def get_monitoring_records(
     return query.offset(skip).limit(limit).all()
 
 
+@app.get("/acceptances/preview/{project_id}", response_model=schemas.AcceptancePreview, tags=["验收管理"])
+def get_acceptance_preview(project_id: int, db: Session = Depends(get_db)):
+    db_project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if db_project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    can_accept = True
+    reason = None
+
+    if db_project.status != ProjectStatus.MONITORING:
+        can_accept = False
+        reason = "项目不在监测期，无法进行验收"
+
+    db_existing = db.query(models.Acceptance).filter(models.Acceptance.project_id == project_id).first()
+    if db_existing:
+        can_accept = False
+        reason = "该项目已有验收记录"
+
+    indicators = _calculate_project_final_indicators(db_project)
+    if indicators is None:
+        can_accept = can_accept and False
+        reason = reason or "项目下暂无监测记录，无法进行验收"
+        actual_veg, actual_carbon, actual_water = 0.0, 0.0, 0.0
+    else:
+        actual_veg, actual_carbon, actual_water = indicators
+
+    comparisons = _build_comparisons(
+        db_project.target_vegetation_coverage,
+        db_project.target_carbon_sequestration,
+        db_project.target_water_conservation,
+        actual_veg,
+        actual_carbon,
+        actual_water,
+    )
+    overall_reached = all(c.reached for c in comparisons) if indicators is not None else False
+
+    return schemas.AcceptancePreview(
+        project_id=db_project.id,
+        project_name=db_project.name,
+        target_vegetation_coverage=db_project.target_vegetation_coverage,
+        target_carbon_sequestration=db_project.target_carbon_sequestration,
+        target_water_conservation=db_project.target_water_conservation,
+        final_vegetation_coverage=actual_veg,
+        final_carbon_sequestration=actual_carbon,
+        final_water_conservation=actual_water,
+        comparisons=comparisons,
+        overall_reached=overall_reached,
+        can_accept=can_accept,
+        reason=reason,
+    )
+
+
 @app.post("/acceptances/", response_model=schemas.Acceptance, tags=["验收管理"])
 def create_acceptance(acceptance: schemas.AcceptanceCreate, db: Session = Depends(get_db)):
     db_project = db.query(models.Project).filter(models.Project.id == acceptance.project_id).first()
@@ -192,15 +298,44 @@ def create_acceptance(acceptance: schemas.AcceptanceCreate, db: Session = Depend
         raise HTTPException(status_code=404, detail="项目不存在")
     if db_project.status != ProjectStatus.MONITORING:
         raise HTTPException(status_code=400, detail="项目不在监测期，无法进行验收")
-    db_acceptance = db.query(models.Acceptance).filter(models.Acceptance.project_id == acceptance.project_id).first()
-    if db_acceptance:
+    db_existing = db.query(models.Acceptance).filter(models.Acceptance.project_id == acceptance.project_id).first()
+    if db_existing:
         raise HTTPException(status_code=400, detail="该项目已有验收记录")
-    db_acceptance = models.Acceptance(**acceptance.model_dump())
+
+    indicators = _calculate_project_final_indicators(db_project)
+    if indicators is None:
+        raise HTTPException(status_code=400, detail="项目下暂无监测记录，无法进行验收")
+
+    actual_veg, actual_carbon, actual_water = indicators
+    comparisons = _build_comparisons(
+        db_project.target_vegetation_coverage,
+        db_project.target_carbon_sequestration,
+        db_project.target_water_conservation,
+        actual_veg,
+        actual_carbon,
+        actual_water,
+    )
+    overall_reached = all(c.reached for c in comparisons)
+    result = AcceptanceResult.PASSED if overall_reached else AcceptanceResult.EXTENDED
+
+    db_acceptance = models.Acceptance(
+        project_id=acceptance.project_id,
+        acceptance_date=acceptance.acceptance_date,
+        result=result,
+        final_vegetation_coverage=actual_veg,
+        final_carbon_sequestration=actual_carbon,
+        final_water_conservation=actual_water,
+        extension_days=acceptance.extension_days,
+        remarks=acceptance.remarks,
+    )
     db.add(db_acceptance)
     db_project.status = ProjectStatus.ACCEPTED
     db.commit()
     db.refresh(db_acceptance)
-    return db_acceptance
+
+    acceptance_data = schemas.Acceptance.model_validate(db_acceptance)
+    acceptance_data.comparisons = comparisons
+    return acceptance_data
 
 
 @app.get("/acceptances/", response_model=List[schemas.Acceptance], tags=["验收管理"])
@@ -216,14 +351,30 @@ def get_acceptances(
         query = query.filter(models.Acceptance.project_id == project_id)
     if result:
         query = query.filter(models.Acceptance.result == result)
-    return query.offset(skip).limit(limit).all()
+    db_acceptances = query.offset(skip).limit(limit).all()
+
+    result_list = []
+    for acc in db_acceptances:
+        project = acc.project
+        comparisons = _build_comparisons(
+            project.target_vegetation_coverage,
+            project.target_carbon_sequestration,
+            project.target_water_conservation,
+            acc.final_vegetation_coverage,
+            acc.final_carbon_sequestration,
+            acc.final_water_conservation,
+        )
+        acc_data = schemas.Acceptance.model_validate(acc)
+        acc_data.comparisons = comparisons
+        result_list.append(acc_data)
+    return result_list
 
 
 @app.get("/statistics/by-region", response_model=List[schemas.StatisticsByRegion], tags=["统计汇总"])
 def get_statistics_by_region(db: Session = Depends(get_db)):
     projects = db.query(models.Project).all()
     region_stats = {}
-    
+
     for project in projects:
         region = project.region
         if region not in region_stats:
@@ -232,18 +383,21 @@ def get_statistics_by_region(db: Session = Depends(get_db)):
                 "total_projects": 0,
                 "total_restoration_area": 0.0,
                 "total_carbon_sequestration": 0.0,
-                "passed_projects": 0
+                "passed_projects": 0,
             }
         region_stats[region]["total_projects"] += 1
         region_stats[region]["total_restoration_area"] += project.total_restoration_area
-        
-        for plot in project.plots:
-            for record in plot.monitoring_records:
-                region_stats[region]["total_carbon_sequestration"] += record.carbon_sequestration
-        
-        if project.acceptance and project.acceptance.result == AcceptanceResult.PASSED:
-            region_stats[region]["passed_projects"] += 1
-    
+
+        if project.acceptance:
+            region_stats[region]["total_carbon_sequestration"] += project.acceptance.final_carbon_sequestration
+            if project.acceptance.result == AcceptanceResult.PASSED:
+                region_stats[region]["passed_projects"] += 1
+        else:
+            indicators = _calculate_project_final_indicators(project)
+            if indicators is not None:
+                _, actual_carbon, _ = indicators
+                region_stats[region]["total_carbon_sequestration"] += actual_carbon
+
     return [schemas.StatisticsByRegion(**stats) for stats in region_stats.values()]
 
 
@@ -251,7 +405,7 @@ def get_statistics_by_region(db: Session = Depends(get_db)):
 def get_statistics_by_degradation_type(db: Session = Depends(get_db)):
     projects = db.query(models.Project).all()
     type_stats = {}
-    
+
     for project in projects:
         deg_type = project.degradation_type.value
         if deg_type not in type_stats:
@@ -260,18 +414,21 @@ def get_statistics_by_degradation_type(db: Session = Depends(get_db)):
                 "total_projects": 0,
                 "total_restoration_area": 0.0,
                 "total_carbon_sequestration": 0.0,
-                "passed_projects": 0
+                "passed_projects": 0,
             }
         type_stats[deg_type]["total_projects"] += 1
         type_stats[deg_type]["total_restoration_area"] += project.total_restoration_area
-        
-        for plot in project.plots:
-            for record in plot.monitoring_records:
-                type_stats[deg_type]["total_carbon_sequestration"] += record.carbon_sequestration
-        
-        if project.acceptance and project.acceptance.result == AcceptanceResult.PASSED:
-            type_stats[deg_type]["passed_projects"] += 1
-    
+
+        if project.acceptance:
+            type_stats[deg_type]["total_carbon_sequestration"] += project.acceptance.final_carbon_sequestration
+            if project.acceptance.result == AcceptanceResult.PASSED:
+                type_stats[deg_type]["passed_projects"] += 1
+        else:
+            indicators = _calculate_project_final_indicators(project)
+            if indicators is not None:
+                _, actual_carbon, _ = indicators
+                type_stats[deg_type]["total_carbon_sequestration"] += actual_carbon
+
     return [schemas.StatisticsByDegradationType(**stats) for stats in type_stats.values()]
 
 
