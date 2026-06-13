@@ -320,6 +320,7 @@ def init_sample_data():
         acceptance = models.Acceptance(
             project_id=project4.id,
             acceptance_date=date(2025, 5, 20),
+            round=1,
             result=AcceptanceResult.PASSED,
             final_vegetation_coverage=78.5,
             final_carbon_sequestration=265.0,

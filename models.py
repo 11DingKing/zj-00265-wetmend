@@ -20,6 +20,7 @@ class ProjectStatus(str, enum.Enum):
     IMPLEMENTING = "实施中"
     MONITORING = "监测期"
     ACCEPTED = "验收"
+    RECTIFICATION = "整改期"
 
 
 class RestorationMeasure(str, enum.Enum):
@@ -51,8 +52,9 @@ class Project(Base):
     description = Column(Text, nullable=True)
 
     plots = relationship("Plot", back_populates="project", cascade="all, delete-orphan")
-    acceptance = relationship("Acceptance", back_populates="project", uselist=False)
+    acceptances = relationship("Acceptance", back_populates="project", cascade="all, delete-orphan")
     measure_records = relationship("RestorationMeasureRecord", back_populates="project", cascade="all, delete-orphan")
+    rectification_plans = relationship("RectificationPlan", back_populates="project", cascade="all, delete-orphan")
 
 
 class RestorationMeasureRecord(Base):
@@ -122,6 +124,7 @@ class Acceptance(Base):
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"))
     acceptance_date = Column(Date)
+    round = Column(Integer, default=1)
     result = Column(Enum(AcceptanceResult))
     final_vegetation_coverage = Column(Float)
     final_carbon_sequestration = Column(Float)
@@ -129,4 +132,23 @@ class Acceptance(Base):
     extension_days = Column(Integer, nullable=True)
     remarks = Column(Text, nullable=True)
 
-    project = relationship("Project", back_populates="acceptance")
+    project = relationship("Project", back_populates="acceptances")
+    rectification_plan = relationship("RectificationPlan", back_populates="acceptance", uselist=False)
+
+
+class RectificationPlan(Base):
+    __tablename__ = "rectification_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"))
+    acceptance_id = Column(Integer, ForeignKey("acceptances.id"), unique=True)
+    plan_content = Column(Text)
+    rectification_deadline = Column(Date)
+    responsible_person = Column(String(200), nullable=True)
+    created_at = Column(Date)
+    completion_date = Column(Date, nullable=True)
+    status = Column(String(50), default="进行中")
+    notes = Column(Text, nullable=True)
+
+    project = relationship("Project", back_populates="rectification_plans")
+    acceptance = relationship("Acceptance", back_populates="rectification_plan")

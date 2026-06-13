@@ -88,6 +88,7 @@ class AcceptanceCreate(AcceptanceBase):
 class Acceptance(AcceptanceBase):
     id: int
     project_id: int
+    round: int
     result: AcceptanceResult
     final_vegetation_coverage: float
     final_carbon_sequestration: float
@@ -176,12 +177,46 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
 
 
+class RectificationPlanBase(BaseModel):
+    plan_content: str
+    rectification_deadline: date
+    responsible_person: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RectificationPlanCreate(RectificationPlanBase):
+    project_id: int
+    acceptance_id: int
+
+
+class RectificationPlanUpdate(BaseModel):
+    plan_content: Optional[str] = None
+    rectification_deadline: Optional[date] = None
+    responsible_person: Optional[str] = None
+    completion_date: Optional[date] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RectificationPlan(RectificationPlanBase):
+    id: int
+    project_id: int
+    acceptance_id: int
+    created_at: date
+    completion_date: Optional[date] = None
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
 class Project(ProjectBase):
     id: int
     status: ProjectStatus
     plots: List[Plot] = []
-    acceptance: Optional[Acceptance] = None
+    acceptances: List[Acceptance] = []
     measure_records: List[RestorationMeasureRecord] = []
+    rectification_plans: List[RectificationPlan] = []
 
     class Config:
         from_attributes = True
@@ -229,8 +264,9 @@ class ProjectWithMeasures(ProjectBase):
     id: int
     status: ProjectStatus
     plots: List[Plot] = []
-    acceptance: Optional[Acceptance] = None
+    acceptances: List[Acceptance] = []
     measure_records: List[RestorationMeasureRecord] = []
+    rectification_plans: List[RectificationPlan] = []
 
     class Config:
         from_attributes = True

@@ -208,8 +208,8 @@ def create_monitoring_record(record: schemas.MonitoringRecordCreate, db: Session
     if db_plot is None:
         raise HTTPException(status_code=404, detail="地块不存在")
     db_project = db_plot.project
-    if db_project.status != ProjectStatus.MONITORING:
-        raise HTTPException(status_code=400, detail="项目不在监测期，无法录入监测记录")
+    if db_project.status not in [ProjectStatus.MONITORING, ProjectStatus.RECTIFICATION]:
+        raise HTTPException(status_code=400, detail="项目不在监测期或整改期，无法录入监测记录")
     db_record = models.MonitoringRecord(**record.model_dump())
     db.add(db_record)
     db.commit()
@@ -248,14 +248,17 @@ def get_acceptance_preview(project_id: int, db: Session = Depends(get_db)):
     can_accept = True
     reason = None
 
-    if db_project.status != ProjectStatus.MONITORING:
+    if db_project.status not in [ProjectStatus.MONITORING, ProjectStatus.RECTIFICATION]:
         can_accept = False
-        reason = "项目不在监测期，无法进行验收"
+        reason = "项目不在监测期或整改期，无法进行验收"
 
-    db_existing = db.query(models.Acceptance).filter(models.Acceptance.project_id == project_id).first()
-    if db_existing:
+    existing_passed = db.query(models.Acceptance).filter(
+        models.Acceptance.project_id == project_id,
+        models.Acceptance.result == AcceptanceResult.PASSED
+    ).first()
+    if existing_passed:
         can_accept = False
-        reason = "该项目已有验收记录"
+        reason = "该项目已存在达标验收记录，无需再次验收"
 
     indicators = _calculate_project_final_indicators(db_project)
     if indicators is None:
@@ -296,11 +299,14 @@ def create_acceptance(acceptance: schemas.AcceptanceCreate, db: Session = Depend
     db_project = db.query(models.Project).filter(models.Project.id == acceptance.project_id).first()
     if db_project is None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    if db_project.status != ProjectStatus.MONITORING:
-        raise HTTPException(status_code=400, detail="项目不在监测期，无法进行验收")
-    db_existing = db.query(models.Acceptance).filter(models.Acceptance.project_id == acceptance.project_id).first()
-    if db_existing:
-        raise HTTPException(status_code=400, detail="该项目已有验收记录")
+    if db_project.status not in [ProjectStatus.MONITORING, ProjectStatus.RECTIFICATION]:
+        raise HTTPException(status_code=400, detail="项目不在监测期或整改期，无法进行验收")
+    existing_passed = db.query(models.Acceptance).filter(
+        models.Acceptance.project_id == acceptance.project_id,
+        models.Acceptance.result == AcceptanceResult.PASSED
+    ).first()
+    if existing_passed:
+        raise HTTPException(status_code=400, detail="该项目已存在达标验收记录，无需再次验收")
 
     indicators = _calculate_project_final_indicators(db_project)
     if indicators is None:
@@ -318,9 +324,14 @@ def create_acceptance(acceptance: schemas.AcceptanceCreate, db: Session = Depend
     overall_reached = all(c.reached for c in comparisons)
     result = AcceptanceResult.PASSED if overall_reached else AcceptanceResult.EXTENDED
 
+    current_round = db.query(models.Acceptance).filter(
+        models.Acceptance.project_id == acceptance.project_id
+    ).count()
+
     db_acceptance = models.Acceptance(
         project_id=acceptance.project_id,
         acceptance_date=acceptance.acceptance_date,
+        round=current_round + 1,
         result=result,
         final_vegetation_coverage=actual_veg,
         final_carbon_sequestration=actual_carbon,
@@ -329,7 +340,12 @@ def create_acceptance(acceptance: schemas.AcceptanceCreate, db: Session = Depend
         remarks=acceptance.remarks,
     )
     db.add(db_acceptance)
-    db_project.status = ProjectStatus.ACCEPTED
+
+    if result == AcceptanceResult.PASSED:
+        db_project.status = ProjectStatus.ACCEPTED
+    else:
+        db_project.status = ProjectStatus.RECTIFICATION
+
     db.commit()
     db.refresh(db_acceptance)
 
@@ -370,6 +386,103 @@ def get_acceptances(
     return result_list
 
 
+@app.post("/rectification-plans/", response_model=schemas.RectificationPlan, tags=["整改管理"])
+def create_rectification_plan(plan: schemas.RectificationPlanCreate, db: Session = Depends(get_db)):
+    from datetime import date as _date
+
+    db_project = db.query(models.Project).filter(models.Project.id == plan.project_id).first()
+    if db_project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    db_acceptance = db.query(models.Acceptance).filter(models.Acceptance.id == plan.acceptance_id).first()
+    if db_acceptance is None:
+        raise HTTPException(status_code=404, detail="关联验收记录不存在")
+    if db_acceptance.project_id != plan.project_id:
+        raise HTTPException(status_code=400, detail="验收记录不属于该项目")
+    if db_acceptance.result != AcceptanceResult.EXTENDED:
+        raise HTTPException(status_code=400, detail="该验收结果不是需延期整改，无需登记整改方案")
+    db_existing_plan = db.query(models.RectificationPlan).filter(
+        models.RectificationPlan.acceptance_id == plan.acceptance_id
+    ).first()
+    if db_existing_plan:
+        raise HTTPException(status_code=400, detail="该验收记录已关联整改方案")
+    if db_project.status != ProjectStatus.RECTIFICATION:
+        db_project.status = ProjectStatus.RECTIFICATION
+
+    db_plan = models.RectificationPlan(
+        **plan.model_dump(),
+        created_at=_date.today(),
+    )
+    db.add(db_plan)
+    db.commit()
+    db.refresh(db_plan)
+    return db_plan
+
+
+@app.get("/rectification-plans/", response_model=List[schemas.RectificationPlan], tags=["整改管理"])
+def get_rectification_plans(
+    project_id: Optional[int] = None,
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.RectificationPlan)
+    if project_id:
+        query = query.filter(models.RectificationPlan.project_id == project_id)
+    if status:
+        query = query.filter(models.RectificationPlan.status == status)
+    return query.offset(skip).limit(limit).all()
+
+
+@app.get("/rectification-plans/{plan_id}", response_model=schemas.RectificationPlan, tags=["整改管理"])
+def get_rectification_plan(plan_id: int, db: Session = Depends(get_db)):
+    db_plan = db.query(models.RectificationPlan).filter(models.RectificationPlan.id == plan_id).first()
+    if db_plan is None:
+        raise HTTPException(status_code=404, detail="整改方案不存在")
+    return db_plan
+
+
+@app.put("/rectification-plans/{plan_id}", response_model=schemas.RectificationPlan, tags=["整改管理"])
+def update_rectification_plan(plan_id: int, plan_update: schemas.RectificationPlanUpdate, db: Session = Depends(get_db)):
+    db_plan = db.query(models.RectificationPlan).filter(models.RectificationPlan.id == plan_id).first()
+    if db_plan is None:
+        raise HTTPException(status_code=404, detail="整改方案不存在")
+    update_data = plan_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_plan, key, value)
+    db.commit()
+    db.refresh(db_plan)
+    return db_plan
+
+
+@app.delete("/rectification-plans/{plan_id}", tags=["整改管理"])
+def delete_rectification_plan(plan_id: int, db: Session = Depends(get_db)):
+    db_plan = db.query(models.RectificationPlan).filter(models.RectificationPlan.id == plan_id).first()
+    if db_plan is None:
+        raise HTTPException(status_code=404, detail="整改方案不存在")
+    db.delete(db_plan)
+    db.commit()
+    return {"message": "整改方案已删除"}
+
+
+@app.post("/rectification-plans/{plan_id}/complete", response_model=schemas.Project, tags=["整改管理"])
+def complete_rectification_and_re_enter_monitoring(plan_id: int, db: Session = Depends(get_db)):
+    from datetime import date as _date
+
+    db_plan = db.query(models.RectificationPlan).filter(models.RectificationPlan.id == plan_id).first()
+    if db_plan is None:
+        raise HTTPException(status_code=404, detail="整改方案不存在")
+    db_project = db_plan.project
+    if db_project.status != ProjectStatus.RECTIFICATION:
+        raise HTTPException(status_code=400, detail="项目不在整改期，无法完成整改")
+    db_plan.status = "已完成"
+    db_plan.completion_date = db_plan.completion_date or _date.today()
+    db_project.status = ProjectStatus.MONITORING
+    db.commit()
+    db.refresh(db_project)
+    return db_project
+
+
 @app.get("/statistics/by-region", response_model=List[schemas.StatisticsByRegion], tags=["统计汇总"])
 def get_statistics_by_region(db: Session = Depends(get_db)):
     projects = db.query(models.Project).all()
@@ -388,9 +501,13 @@ def get_statistics_by_region(db: Session = Depends(get_db)):
         region_stats[region]["total_projects"] += 1
         region_stats[region]["total_restoration_area"] += project.total_restoration_area
 
-        if project.acceptance:
-            region_stats[region]["total_carbon_sequestration"] += project.acceptance.final_carbon_sequestration
-            if project.acceptance.result == AcceptanceResult.PASSED:
+        latest_acceptance = None
+        if project.acceptances:
+            latest_acceptance = max(project.acceptances, key=lambda a: a.round)
+
+        if latest_acceptance:
+            region_stats[region]["total_carbon_sequestration"] += latest_acceptance.final_carbon_sequestration
+            if any(a.result == AcceptanceResult.PASSED for a in project.acceptances):
                 region_stats[region]["passed_projects"] += 1
         else:
             indicators = _calculate_project_final_indicators(project)
@@ -419,9 +536,13 @@ def get_statistics_by_degradation_type(db: Session = Depends(get_db)):
         type_stats[deg_type]["total_projects"] += 1
         type_stats[deg_type]["total_restoration_area"] += project.total_restoration_area
 
-        if project.acceptance:
-            type_stats[deg_type]["total_carbon_sequestration"] += project.acceptance.final_carbon_sequestration
-            if project.acceptance.result == AcceptanceResult.PASSED:
+        latest_acceptance = None
+        if project.acceptances:
+            latest_acceptance = max(project.acceptances, key=lambda a: a.round)
+
+        if latest_acceptance:
+            type_stats[deg_type]["total_carbon_sequestration"] += latest_acceptance.final_carbon_sequestration
+            if any(a.result == AcceptanceResult.PASSED for a in project.acceptances):
                 type_stats[deg_type]["passed_projects"] += 1
         else:
             indicators = _calculate_project_final_indicators(project)
@@ -435,10 +556,11 @@ def get_statistics_by_degradation_type(db: Session = Depends(get_db)):
 def _get_project_actual_indicators(db_project: models.Project) -> Optional[Tuple[float, float, float, float]]:
     indicators = _calculate_project_final_indicators(db_project)
     if indicators is None:
-        if db_project.acceptance:
-            actual_veg = db_project.acceptance.final_vegetation_coverage
-            actual_carbon = db_project.acceptance.final_carbon_sequestration
-            actual_water = db_project.acceptance.final_water_conservation
+        if db_project.acceptances:
+            latest = max(db_project.acceptances, key=lambda a: a.round)
+            actual_veg = latest.final_vegetation_coverage
+            actual_carbon = latest.final_carbon_sequestration
+            actual_water = latest.final_water_conservation
         else:
             return None
     else:
@@ -537,7 +659,7 @@ def get_statistics_by_measure_effectiveness(db: Session = Depends(get_db)):
             has_data = True
 
         passed = False
-        if project.acceptance and project.acceptance.result == AcceptanceResult.PASSED:
+        if project.acceptances and any(a.result == AcceptanceResult.PASSED for a in project.acceptances):
             passed = True
 
         used_measure_types = set()
@@ -633,8 +755,9 @@ def get_project_measures_with_effect(project_id: int, db: Session = Depends(get_
         })
 
     passed = None
-    if db_project.acceptance:
-        passed = db_project.acceptance.result.value
+    if db_project.acceptances:
+        latest = max(db_project.acceptances, key=lambda a: a.round)
+        passed = latest.result.value
 
     return {
         "project_id": db_project.id,
@@ -655,7 +778,7 @@ def get_project_measures_with_effect(project_id: int, db: Session = Depends(get_
 def root():
     return {
         "name": "青藏高原湿地草地退化修复项目管理系统",
-        "version": "1.1.0",
-        "description": "管理青藏高原东北缘湿地草地退化修复项目，支持项目全生命周期管理、措施登记与成效对比",
+        "version": "1.2.0",
+        "description": "管理青藏高原东北缘湿地草地退化修复项目，支持项目全生命周期管理、整改支线、措施登记与成效对比",
         "docs": "/docs"
     }
